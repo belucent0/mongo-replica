@@ -1,0 +1,34 @@
+services:
+  mongodb:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mongo-alone:latest
+    container_name: example-mongodb
+    restart: always
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASS}
+      MONGO_NAME: ${MONGO_NAME}
+      MONGO_USER: ${MONGO_USER}
+      MONGO_PASS: ${MONGO_PASS}
+      MONGO_PRIMARY_HOST: ${MONGO_PRIMARY_HOST}
+    entrypoint: ["/mongodb/docker-entrypoint.sh"]
+    command: mongod --replSet rs0 --bind_ip_all --keyFile /data/db/mongodb-keyfile
+    volumes:
+      - mongodb_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 90s
+    networks:
+      - mongo-net
+
+volumes:
+  mongodb_data:
+    driver: local
+
+networks:
+  mongo-net:
