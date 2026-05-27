@@ -11,6 +11,7 @@ RUN chmod +x /mongodb/docker-entrypoint.sh
 COPY scripts/init-replica.sh /mongodb/init-replica.sh
 RUN chmod +x /mongodb/init-replica.sh
 COPY scripts/init-user.js /mongodb/init-user.js
+COPY scripts/init-view.js /mongodb/init-view.js
 
 # MongoDB 시작 명령어
 # CMD는 기본 옵션만 포함 (keyFile은 docker-entrypoint.sh에서 처리)
