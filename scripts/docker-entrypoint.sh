@@ -1,6 +1,11 @@
 #!/bin/bash
 set -e
 
+# TLS 인증서 생성 (첫 기동 시에만, 이후 재사용)
+if [ -f /mongodb/init-tls.sh ]; then
+  bash /mongodb/init-tls.sh
+fi
+
 # MongoDB가 처음 시작될 때만 인증 없이 시작하여 초기 설정 수행
 # /data/db/admin 디렉토리가 없으면 (첫 시작) 인증 없이 시작
 if [ ! -d /data/db/admin ]; then
@@ -136,6 +141,15 @@ if [ ! -f /data/db/mongodb-keyfile ]; then
   chmod 400 /data/db/mongodb-keyfile
   chown mongodb:mongodb /data/db/mongodb-keyfile
   echo "MongoDB keyfile created successfully at /data/db/mongodb-keyfile"
+fi
+
+# TLS 인증서가 존재하면 TLS 옵션을 CMD에 추가
+if [ -f /data/db/certs/mongo.pem ] && [ -f /data/db/certs/ca.pem ]; then
+  echo "TLS certificates found. Appending TLS options to mongod command."
+  set -- "$@" \
+    --tlsMode allowTLS \
+    --tlsCertificateKeyFile /data/db/certs/mongo.pem \
+    --tlsCAFile /data/db/certs/ca.pem
 fi
 
 # 초기화 이후에는 공식 entrypoint로 제어를 넘겨 최종 mongod를 실행한다
