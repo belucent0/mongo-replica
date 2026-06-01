@@ -30,12 +30,17 @@ openssl req -new -x509 -days 3650 -key "$CA_KEY" -out "$CA_PEM" \
 
 # 2. 서버 인증서 생성
 echo "Step 2: Creating server certificate..."
-openssl genrsa -out "$MONGO_KEY" 2048
+openssl genrsa -out "$MONGO_KEY" 3072
 openssl req -new -key "$MONGO_KEY" -out "$CERT_DIR/mongo.csr" \
   -subj "/CN=${MONGO_NODE_NAME:-mongodb}"
 
-# SAN: 컨테이너명, localhost, 0.0.0.0 + 환경변수로 추가 IP/DNS 지정 가능
-SAN="DNS:${MONGO_NODE_NAME:-mongodb},DNS:localhost,IP:127.0.0.1"
+# SAN: 노드명(IPv4 면 IP:, 아니면 DNS:) + localhost + 환경변수 추가 SAN
+NODE_NAME="${MONGO_NODE_NAME:-mongodb}"
+if [[ "$NODE_NAME" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+  SAN="IP:$NODE_NAME,DNS:localhost,IP:127.0.0.1"
+else
+  SAN="DNS:$NODE_NAME,DNS:localhost,IP:127.0.0.1"
+fi
 if [ -n "$MONGO_TLS_EXTRA_SAN" ]; then
   SAN="$SAN,$MONGO_TLS_EXTRA_SAN"
 fi
@@ -43,7 +48,7 @@ fi
 openssl x509 -req -in "$CERT_DIR/mongo.csr" \
   -CA "$CA_PEM" -CAkey "$CA_KEY" -CAcreateserial \
   -days 825 -out "$MONGO_CRT" \
-  -extfile <(printf "subjectAltName=$SAN")
+  -extfile <(printf "subjectAltName=%s" "$SAN")
 
 # MongoDB는 key+cert 합본 PEM을 요구
 cat "$MONGO_KEY" "$MONGO_CRT" > "$MONGO_PEM"

@@ -7,8 +7,10 @@ if [ -f /mongodb/init-tls.sh ]; then
 fi
 
 # MongoDB가 처음 시작될 때만 인증 없이 시작하여 초기 설정 수행
-# /data/db/admin 디렉토리가 없으면 (첫 시작) 인증 없이 시작
-if [ ! -d /data/db/admin ]; then
+# sentinel 파일로 완료를 판단한다 (WiredTiger 는 DB별 디렉토리를 만들지 않으므로
+# 디렉토리 존재 여부는 신뢰할 수 없음 → 재시작 시 재초기화 방지)
+INIT_DONE_MARKER=/data/db/.init-done
+if [ ! -f "$INIT_DONE_MARKER" ]; then
   echo "=========================================="
   echo "First start detected. Initializing MongoDB..."
   echo "Step 1: Starting MongoDB without authentication..."
@@ -32,30 +34,21 @@ if [ ! -d /data/db/admin ]; then
   echo "MongoDB is ready."
   
   # Step 2: Replica Set 초기화 및 PRIMARY 대기 (분리된 스크립트 사용)
+  #         실패 시 set -e 가 즉시 중단시키므로 별도 $? 체크 불필요
   if [ -f /mongodb/init-replica.sh ]; then
     bash /mongodb/init-replica.sh
-    if [ $? -ne 0 ]; then
-      echo "ERROR: Failed to initialize Replica Set"
-      exit 1
-    fi
   else
     echo "ERROR: init-replica.sh not found"
     exit 1
   fi
-  
+
   # Step 3: Root 사용자 생성 (통합 스크립트 사용)
-  # docker-compose.yml에서 이미 설정된 환경변수 사용
   # MONGO_INITDB_ROOT_USERNAME이 존재하면 init-user.js가 root 사용자로 판별함
   export MONGO_INITDB_ROOT_USERNAME MONGO_INITDB_ROOT_PASSWORD
-  
+
   if [ -f /mongodb/init-user.js ]; then
     mongosh admin --quiet --file /mongodb/init-user.js
-    if [ $? -ne 0 ]; then
-      echo "ERROR: Failed to create root user"
-      exit 1
-    else
-      echo "Root user created successfully"
-    fi
+    echo "Root user created successfully"
   else
     echo "ERROR: init-user.js not found"
     exit 1
@@ -74,33 +67,14 @@ if [ ! -d /data/db/admin ]; then
   
   # MONGO_INITDB_ROOT_USERNAME을 unset하여 init-user.js가 앱 사용자로 판별하도록 함
   unset MONGO_INITDB_ROOT_USERNAME MONGO_INITDB_ROOT_PASSWORD
-  # 표준 변수 직접 export (특수문자 포함 비밀번호를 위해 명시적으로 export)
-  # 주의: 변수 값에 #이 포함되어 있어도 안전하게 전달되도록 따옴표 사용
-  export MONGO_NAME="$MONGO_NAME"
-  export MONGO_USER="$MONGO_USER"
-  # MONGO_PASS는 특수문자(# 등)가 포함될 수 있으므로 안전하게 export
-  export MONGO_PASS="$MONGO_PASS"
-  
-  # 디버깅: 환경변수 길이 확인 (비밀번호는 출력하지 않음)
-  echo "DEBUG: MONGO_NAME length: ${#MONGO_NAME}"
-  echo "DEBUG: MONGO_USER length: ${#MONGO_USER}"
-  echo "DEBUG: MONGO_PASS length: ${#MONGO_PASS}"
-    
-  # init-user.js 파일이 있으면 실행, 없으면 스킵
-  # 인증 없이 실행 (루트 사용자가 이미 생성되었지만 아직 인증이 활성화되지 않음)
-  # 앱 사용자는 해당 DB에 생성하므로 해당 DB 컨텍스트에서 실행
-    if [ -f /mongodb/init-user.js ]; then
-    # 환경변수를 mongosh에 안전하게 전달 (env 명령어 사용)
+
+  # 앱 사용자 생성 (mongosh 가 해당 DB 컨텍스트에서 실행, 환경변수는 env 로 안전 전달)
+  if [ -f /mongodb/init-user.js ]; then
     env MONGO_NAME="$MONGO_NAME" MONGO_USER="$MONGO_USER" MONGO_PASS="$MONGO_PASS" \
       mongosh "$MONGO_NAME" --quiet --file /mongodb/init-user.js
-      if [ $? -ne 0 ]; then
-      echo "ERROR: Failed to create application user"
-      exit 1
-      else
-      echo "Application user created successfully"
-      fi
-    else
-      echo "init-user.js not found, skipping application user creation"
+    echo "Application user created successfully"
+  else
+    echo "init-user.js not found, skipping application user creation"
   fi
   
   # Step 5: 뷰 생성 (인증 없이)
@@ -108,21 +82,19 @@ if [ ! -d /data/db/admin ]; then
   echo "Step 5: Creating views..."
   echo "=========================================="
   
-  # init-view.js 파일이 있으면 실행, 없으면 스킵
-  # 인증 없이 실행
+  # 뷰 생성 (있으면 실행)
   if [ -f /mongodb/init-view.js ]; then
     export MONGO_NAME
     mongosh "$MONGO_NAME" --quiet --file /mongodb/init-view.js
-    if [ $? -ne 0 ]; then
-      echo "ERROR: Failed to create or verify views"
-      exit 1
-    else
-      echo "Views created and verified successfully"
-    fi
+    echo "Views created and verified successfully"
   else
     echo "init-view.js not found, skipping view creation"
   fi
   
+  # 초기화 완료 마커 기록 (이후 재시작 시 재초기화 방지)
+  touch "$INIT_DONE_MARKER"
+  chown mongodb:mongodb "$INIT_DONE_MARKER"
+
   # MongoDB 종료
   echo "Shutting down MongoDB..."
   mongod --shutdown
@@ -144,12 +116,27 @@ if [ ! -f /data/db/mongodb-keyfile ]; then
 fi
 
 # TLS 인증서가 존재하면 TLS 옵션을 CMD에 추가
+# MONGO_TLS_REQUIRED (기본 true, 스펙 준수):
+#   true  → requireTLS : 앱도 TLS 필수. 평문 접속 거부.
+#   false → allowTLS   : 앱 평문/TLS 모두 허용 (기존 자동화 호환용)
+# --tlsAllowConnectionsWithoutCertificates: 클라이언트 인증서(mTLS) 없이도 TLS 접속 가능
+# --tlsDisabledProtocols: 구버전 TLS(1.0/1.1) 명시적 비활성화
 if [ -f /data/db/certs/mongo.pem ] && [ -f /data/db/certs/ca.pem ]; then
-  echo "TLS certificates found. Appending TLS options to mongod command."
+  # 공백 트리밍 + 소문자 정규화 후 판정 (사용자 입력의 사소한 차이 흡수)
+  _tls_req="${MONGO_TLS_REQUIRED:-true}"
+  _tls_req="${_tls_req//[[:space:]]/}"
+  _tls_req="${_tls_req,,}"
+  case "$_tls_req" in
+    false|0|no|n|off|disabled|disable) TLS_MODE=allowTLS ;;
+    *)                                  TLS_MODE=requireTLS ;;  # 매칭 안 되면 안전한 쪽
+  esac
+  echo "TLS certificates found. mode=$TLS_MODE (MONGO_TLS_REQUIRED=${MONGO_TLS_REQUIRED:-true})"
   set -- "$@" \
-    --tlsMode allowTLS \
+    --tlsMode "$TLS_MODE" \
     --tlsCertificateKeyFile /data/db/certs/mongo.pem \
-    --tlsCAFile /data/db/certs/ca.pem
+    --tlsCAFile /data/db/certs/ca.pem \
+    --tlsDisabledProtocols TLS1_0,TLS1_1 \
+    --tlsAllowConnectionsWithoutCertificates
 fi
 
 # 초기화 이후에는 공식 entrypoint로 제어를 넘겨 최종 mongod를 실행한다

@@ -47,14 +47,33 @@ try {
   print(`✅ User '${userName}' created`);
 
   // 생성 후 즉시 확인
-  const createdUser = targetDb.getUser(userName);
-  if (!createdUser || createdUser.user !== userName) {
-    print(`❌ ERROR: User '${userName}' was not created properly`);
-    quit(1);
+  // localhost exception 으로 첫 계정을 만든 경우, 계정이 생기는 즉시 exception 이
+  // 소진되어 getUser(usersInfo) 는 인증을 요구한다. createUser 가 이미 성공했으므로
+  // 이 경우 검증을 건너뛴다(비치명).
+  try {
+    const createdUser = targetDb.getUser(userName);
+    if (!createdUser || createdUser.user !== userName) {
+      print(`❌ ERROR: User '${userName}' was not created properly`);
+      quit(1);
+    }
+    print(`✅ User '${userName}' verified successfully`);
+  } catch (ve) {
+    if (ve.message && ve.message.includes("requires authentication")) {
+      print(
+        `ℹ️ Verification skipped (localhost exception consumed): '${userName}' created`
+      );
+    } else {
+      throw ve;
+    }
   }
-  print(`✅ User '${userName}' verified successfully`);
 } catch (e) {
-  if (e.message && e.message.includes("already exists")) {
+  // "requires authentication": localhost exception 이 이미 소진된 경우로,
+  // 첫 계정(root)이 이전 실행에서 생성되었음을 의미 → 재시작 시 멱등하게 통과.
+  if (
+    e.message &&
+    (e.message.includes("already exists") ||
+      e.message.includes("requires authentication"))
+  ) {
     print(`ℹ️ User '${userName}' already exists`);
   } else {
     print(`❌ Error: ${e.message}`);

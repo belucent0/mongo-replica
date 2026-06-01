@@ -15,15 +15,18 @@ services:
       MONGO_PRIMARY_HOST: ${MONGO_PRIMARY_HOST}
       MONGO_NODE_NAME: ${MONGO_NODE_NAME:-mongodb}
       MONGO_TLS_EXTRA_SAN: ${MONGO_TLS_EXTRA_SAN:-}
-    entrypoint: ["/mongodb/docker-entrypoint.sh"]
-    command: mongod --replSet rs0 --bind_ip_all --keyFile /data/db/mongodb-keyfile
+      MONGO_TLS_REQUIRED: ${MONGO_TLS_REQUIRED:-true}
+    # entrypoint / command 는 Dockerfile 의 ENTRYPOINT/CMD 를 그대로 사용
     volumes:
       - mongodb_data:/data/db
     healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      # 첫 기동 후 init-tls.sh 가 인증서를 만들고 mongod 가 TLS 옵션으로 재실행되면
+      # requireTLS 모드에서는 평문 ping 이 거부되므로 healthcheck 도 TLS 로 한다
+      # (인증서가 아직 없는 초기 구간은 start_period 가 흡수).
+      test: ["CMD", "mongosh", "--tls", "--tlsCAFile", "/data/db/certs/ca.pem", "--tlsAllowInvalidHostnames", "--quiet", "--eval", "db.adminCommand('ping')"]
       interval: 30s
       timeout: 10s
-      retries: 10
+      retries: 3
       start_period: 90s
     networks:
       - mongo-net

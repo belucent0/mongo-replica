@@ -1,0 +1,103 @@
+# 3노드 레플리카셋 (데이터 2 + Arbiter 1) + TLS 자동화
+#
+# 구성:
+#   mongo-init : 공유 PKI(CA/keyFile/노드 인증서) 1회 생성 후 종료
+#   mongo1     : primary 후보 (데이터)
+#   mongo2     : secondary (데이터)
+#   mongo3     : arbiter (투표 전용, 데이터 없음)
+#
+# 사용:
+#   cp .env.replicaset.example .env.local   # 값 수정
+#   docker compose -f docker-compose.replicaset.yml --env-file .env.local up -d --build
+
+# 공통 정의 (YAML anchor) — 모든 mongo 노드가 재사용
+x-mongo-healthcheck: &mongo-healthcheck
+  test: ["CMD", "mongosh", "--tls", "--tlsCAFile", "/pki/ca.pem", "--tlsAllowInvalidHostnames", "--quiet", "--eval", "db.adminCommand('ping')"]
+  interval: 30s
+  timeout: 10s
+  retries: 3
+  start_period: 120s
+
+x-mongo-node-common: &mongo-node-common
+  image: ${MONGO_IMAGE:-mongo-rs:latest}
+  depends_on:
+    mongo-init:
+      condition: service_completed_successfully
+  restart: always
+  entrypoint: ["/mongodb/docker-entrypoint-replica.sh"]
+  networks:
+    - mongo-net
+  healthcheck: *mongo-healthcheck
+
+x-mongo-node-env: &mongo-node-env
+  MONGO_REPLICA_HOSTS: ${MONGO_REPLICA_HOSTS}
+  MONGO_ARBITER_HOST: ${MONGO_ARBITER_HOST:-}
+  MONGO_TLS_REQUIRED: ${MONGO_TLS_REQUIRED:-true}
+
+services:
+  mongo-init:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${MONGO_IMAGE:-mongo-rs:latest}
+    container_name: ${COMPOSE_PROJECT_NAME:-rs}-mongo-init
+    entrypoint: ["/mongodb/gen-secrets.sh"]
+    environment:
+      MONGO_REPLICA_HOSTS: ${MONGO_REPLICA_HOSTS}
+      MONGO_ARBITER_HOST: ${MONGO_ARBITER_HOST:-}
+    volumes:
+      - mongo_pki:/pki
+    networks:
+      - mongo-net
+
+  mongo1:
+    <<: *mongo-node-common
+    container_name: ${COMPOSE_PROJECT_NAME:-rs}-mongo1
+    environment:
+      <<: *mongo-node-env
+      MONGO_ROLE: primary
+      MONGO_NODE_NAME: mongo1
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASS}
+      MONGO_NAME: ${MONGO_NAME}
+      MONGO_USER: ${MONGO_USER}
+      MONGO_PASS: ${MONGO_PASS}
+    volumes:
+      - mongo1_data:/data/db
+      - mongo_pki:/pki:ro
+
+  mongo2:
+    <<: *mongo-node-common
+    container_name: ${COMPOSE_PROJECT_NAME:-rs}-mongo2
+    environment:
+      <<: *mongo-node-env
+      MONGO_ROLE: secondary
+      MONGO_NODE_NAME: mongo2
+    volumes:
+      - mongo2_data:/data/db
+      - mongo_pki:/pki:ro
+
+  mongo3:
+    <<: *mongo-node-common
+    container_name: ${COMPOSE_PROJECT_NAME:-rs}-mongo3
+    environment:
+      <<: *mongo-node-env
+      MONGO_ROLE: arbiter
+      MONGO_NODE_NAME: mongo3
+    volumes:
+      - mongo3_data:/data/db
+      - mongo_pki:/pki:ro
+
+volumes:
+  mongo_pki:
+    driver: local
+  mongo1_data:
+    driver: local
+  mongo2_data:
+    driver: local
+  mongo3_data:
+    driver: local
+
+networks:
+  mongo-net:
+    name: ${DOCKER_NETWORK_NAME:-mongo-rs-net}

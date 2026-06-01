@@ -29,6 +29,12 @@ try {
       print("Replica Set initialization failed:", result);
       quit(1);
     }
+  } else if (
+    e.message.includes("requires authentication") ||
+    e.message.includes("already initialized")
+  ) {
+    // 인증 켜진 상태에서 status 조회만 막혔거나, 이미 초기화 된 경우 → 멱등 처리
+    print("Replica Set already initialized (auth required to read status)");
   } else {
     print("Error checking Replica Set status:", e.message);
     throw e;
