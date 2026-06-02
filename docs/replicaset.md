@@ -8,7 +8,7 @@
 | 상황 | 추천 구성 |
 |---|---|
 | 단일 호스트 · 개발/테스트 · Prisma 트랜잭션만 필요 | 단일 노드 (`docker-compose.yml`) |
-| **운영자 납품 · 가용성 필요 · 보안 스펙 준수** | **3노드 (이 문서)** |
+| **운영 환경 배포 · 가용성 필요 · 보안 스펙 준수** | **3노드 (이 문서)** |
 | DB 노드를 여러 물리 서버에 분산 | 3노드 + 네트워크 설정 변경 |
 
 본 가이드의 3노드 구성은 다음을 자동화합니다:
@@ -62,7 +62,7 @@ docker compose -f docker-compose.replicaset.yml up
 이미지를 사전 빌드해서 배포하는 경우 추가:
 
 - 빌드 호스트: `docker build` 가능한 환경
-- 운영자 호스트: 빌드된 이미지 tar 파일 로드 가능
+- 운영 호스트: 빌드된 이미지 tar 파일 로드 가능
 
 ## ⚙️ 환경 변수 설정
 
@@ -112,24 +112,24 @@ MONGO_TLS_REQUIRED=true
 
 ## 🚀 빌드 & 배포
 
-### 권장 워크플로 (사내 빌드 → 운영자 로드)
+### 권장 워크플로 (빌드 호스트 → 운영 호스트 로드)
 
 ```bash
-# ─── 1. 사내 빌드 호스트에서 이미지 생성 ───
+# ─── 1. 빌드 호스트에서 이미지 생성 ───
 cd /path/to/mongodb
 docker build -t mongo-rs:1.0.0 .
 
 # 이미지를 tar 로 export
 docker save mongo-rs:1.0.0 -o mongo-rs-1.0.0.tar
 
-# ─── 2. 운영자로 전달 ───
+# ─── 2. 운영 호스트로 전달 ───
 # 아래 파일들을 같이 전달:
 #   - mongo-rs-1.0.0.tar           (이미지)
 #   - docker-compose.replicaset.yml
-#   - .env.replicaset.example       (고객 환경에 맞춰 .env 로 수정)
+#   - .env.replicaset.example       (운영 환경에 맞춰 .env 로 수정)
 #   - docs/replicaset.md            (이 문서)
 
-# ─── 3. 운영자 호스트에서 ───
+# ─── 3. 운영 호스트에서 ───
 docker load -i mongo-rs-1.0.0.tar
 docker images | grep mongo-rs        # 이미지 로드 확인
 
@@ -145,7 +145,7 @@ docker compose -f docker-compose.replicaset.yml up -d
 docker compose -f docker-compose.replicaset.yml --env-file .env up -d --build
 ```
 
-`--build` 는 코드 수정 시마다 빌드를 강제합니다. 운영자에서는 사용하지 않습니다.
+`--build` 는 코드 수정 시마다 빌드를 강제합니다. 운영 호스트에서는 사용하지 않습니다.
 
 ## ✅ 배포 검증
 
@@ -443,6 +443,74 @@ docker compose -f docker-compose.replicaset.yml up -d
 ```
 
 자동화 스크립트(`init-replica-multi.sh`)는 첫 기동에만 동작합니다. 운영 중 멤버 변경은 `mongosh` 에서 `rs.add()` / `rs.remove()` 로 수행하세요.
+
+### E. 배포 시나리오별 환경 변수·구성 차이
+
+대상 환경에 따라 3노드 배포가 달라집니다. 아래 표로 차이점 정리:
+
+| 시나리오 | 설명 |
+|---|---|
+| **A** | 동일 호스트 · compose 가 새 Docker 네트워크 생성 (기본 가정) |
+| **B** | 동일 호스트 · 앱이 사전에 만든 Docker 네트워크 공유 |
+| **C** | 노드를 여러 물리 호스트에 분산 (같은 LAN 권장) |
+
+#### 환경 변수·설정 차이
+
+| 항목 | A (기본) | B (공유 네트워크) | C (다중 호스트) |
+|---|---|---|---|
+| `MONGO_REPLICA_HOSTS` | 컨테이너명 (`mongo1:27017,mongo2:27017`) | 동일 | **호스트 LAN IP / FQDN** |
+| `MONGO_ARBITER_HOST` | `mongo3:27017` | 동일 | **호스트 LAN IP / FQDN** |
+| `DOCKER_NETWORK_NAME` | 자유 (자동 생성) | **앱이 만든 네트워크명** | 호스트별 분리 |
+| `compose networks:` | `name:` 만 지정 | **`external: true` 추가** | 호스트별 다름 |
+| `ports:` | 불필요 (네트워크 공유) | 불필요 | **27017 호스트 매핑 필수** |
+| 인증서 SAN | `DNS:mongo1` 자동 | 동일 | `IP:192.168.x.x` 자동 (`gen-secrets.sh`) |
+| 방화벽 | — | — | **노드 간 27017 통신 허용** |
+| compose 파일 구조 | 1개 | 1개 (`external: true` 한 줄 추가) | 호스트별 별도 |
+
+#### 시나리오 B — 외부 네트워크 공유
+
+앱이 먼저 `myapp-net` 같은 네트워크를 만들어둔 경우, 그 네트워크에 MongoDB 노드를 join 시켜서 같은 DNS 공간을 공유합니다.
+
+`.env` 설정:
+```env
+DOCKER_NETWORK_NAME=myapp-net   # 앱이 만든 네트워크 이름
+# (다른 값은 시나리오 A 와 동일)
+```
+
+`docker-compose.replicaset.yml` 의 networks 섹션 한 줄 추가:
+```yaml
+networks:
+  mongo-net:
+    name: ${DOCKER_NETWORK_NAME:-mongo-rs-net}
+    external: true                # ← 이 줄 추가 (compose 가 만들지 않고 기존 네트워크 사용)
+```
+
+기동 순서:
+1. 앱 측에서 docker compose up 으로 `myapp-net` 네트워크가 먼저 생성되어 있어야 함
+2. 그 다음 MongoDB compose up
+
+#### 시나리오 C — 다중 호스트 분산
+
+각 노드가 다른 물리 서버에 있을 때. 같은 LAN(< 10ms latency) 권장.
+
+각 호스트에서 자기 노드만 실행:
+```env
+# 호스트 1 (mongo1)
+MONGO_REPLICA_HOSTS=192.168.1.10:27017,192.168.1.11:27017
+MONGO_ARBITER_HOST=192.168.1.12:27017
+```
+
+`docker-compose.replicaset.yml` 을 호스트별로 분할하거나, 단일 compose 에서 자기 노드 서비스만 활성화. 각 노드에 ports 매핑 추가:
+```yaml
+mongo1:
+  ...
+  ports:
+    - "27017:27017"          # ← 다른 호스트 노드가 LAN IP 로 접속할 수 있도록 노출
+```
+
+방화벽: 모든 노드 간 27017 통신 허용. SAN 은 `gen-secrets.sh` 가 IP 자동 판별로 `IP:` 등록.
+
+> 다중 호스트 분산은 docker swarm 같은 orchestrator 사용을 우선 고려하세요. 단일 compose 다중 호스트는 운영 복잡도가 큽니다.
 
 ## 📝 버전 정보
 
