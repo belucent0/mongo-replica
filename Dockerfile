@@ -1,5 +1,10 @@
 FROM mongo:8.0.17
 
+# 백업 암호화 도구 age 설치 (mongodump/gzip 은 베이스 이미지에 이미 포함)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends age \
+    && rm -rf /var/lib/apt/lists/*
+
 # MongoDB 스크립트 디렉토리 생성
 RUN mkdir -p /mongodb && chown mongodb:mongodb /mongodb
 

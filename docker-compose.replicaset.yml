@@ -88,6 +88,29 @@ services:
       - mongo3_data:/data/db
       - mongo_pki:/pki:ro
 
+  # 백업 전용 컨테이너:  mongodump(secondaryPreferred) → gzip → age 암호화 → 호스트 폴더
+  # 호스트 폴더(${BACKUP_DIR})에 암호화 백업이 쌓이므로 컨테이너를 지워도 백업은 보존된다.
+  mongo-backup:
+    image: ${MONGO_IMAGE:-mongo-rs:latest}
+    container_name: ${COMPOSE_PROJECT_NAME:-rs}-mongo-backup
+    depends_on:
+      mongo1:
+        condition: service_healthy
+    restart: always
+    entrypoint: ["/mongodb/backup.sh"]
+    environment:
+      MONGO_REPLICA_HOSTS: ${MONGO_REPLICA_HOSTS}
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASS}
+      BACKUP_INTERVAL: ${BACKUP_INTERVAL:-86400}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-7}
+      BACKUP_AGE_RECIPIENT: ${BACKUP_AGE_RECIPIENT:-}
+    volumes:
+      - ${BACKUP_DIR:-./backups}:/backups   # ← 호스트 폴더 bind mount
+      - mongo_pki:/pki:ro
+    networks:
+      - mongo-net
+
 volumes:
   mongo_pki:
     driver: local

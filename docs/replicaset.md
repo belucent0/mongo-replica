@@ -37,8 +37,11 @@ docker compose -f docker-compose.replicaset.yml up
   ├─ mongo2  (데이터, secondary, priority 1)
   │   └─ docker-entrypoint-replica.sh → mongod
   │
-  └─ mongo3  (arbiter, 투표만 — 데이터 없음)
-      └─ docker-entrypoint-replica.sh → mongod
+  ├─ mongo3  (arbiter, 투표만 — 데이터 없음)
+  │   └─ docker-entrypoint-replica.sh → mongod
+  │
+  └─ mongo-backup  (백업 전용, 상시)
+      └─ backup.sh → mongodump(secondaryPreferred)→gzip→age 암호화→호스트 폴더
 ```
 
 ### 왜 데이터 2 + Arbiter 1인가
@@ -262,21 +265,90 @@ docker exec -it myapp-mongo1 \
   --tls --tlsCAFile /pki/ca.pem --tlsAllowInvalidHostnames
 ```
 
-### 백업 (mongodump)
+### 백업 (자동 — mongo-backup 서비스)
+
+`docker-compose.replicaset.yml` 의 **mongo-backup** 컨테이너가 정기적으로 백업을 수행합니다.
+별도 명령 없이 `docker compose up -d` 만으로 동작합니다.
+
+```
+mongo-backup 동작:
+  secondaryPreferred 로 mongodump (평소 secondary 에서 읽어 primary 부하 최소화,
+                                    secondary 가 없으면 primary 로 폴백, TLS)
+    → gzip 압축
+    → age 공개키로 암호화 (스펙 6.2.3 — AEAD)
+    → 호스트 폴더(${BACKUP_DIR}) 에 저장
+    → BACKUP_RETENTION_DAYS 초과분 자동 삭제
+  ⟳ BACKUP_INTERVAL 간격 반복
+```
+
+```
+호스트:  ${BACKUP_DIR}/   (예: ./backups)
+         ├── backup-2026-06-03_030000.archive.gz.age
+         ├── backup-2026-06-04_030000.archive.gz.age
+         └── ...  (보관 일수만큼 유지, 컨테이너를 지워도 보존)
+```
+
+관련 환경 변수 (`.env`):
+
+```env
+BACKUP_DIR=./backups            # 호스트 백업 폴더 (bind mount)
+BACKUP_INTERVAL=86400           # 백업 주기(초). 86400=매일
+BACKUP_RETENTION_DAYS=7         # 보관 일수
+BACKUP_AGE_RECIPIENT=age1...    # age 공개키 (아래 "백업 키 생성" 참고)
+```
+
+#### 백업 키 생성 (최초 1회, 운영 서버가 아닌 안전한 환경에서)
+
+스펙 6.2.3 은 "운영 TLS·LUKS 키와 완전히 다른 키 체계" 를 요구합니다. `age` 키쌍이 이를 만족합니다.
 
 ```bash
-# 운영 노드에서 dump (TLS 통과)
-docker exec myapp-mongo1 \
-  mongodump \
-    --uri="mongodb://root:#StrongRootPass1!@127.0.0.1:27017/?authSource=admin&directConnection=true" \
-    --tls --tlsCAFile=/pki/ca.pem --tlsAllowInvalidHostnames \
-    --archive --gzip > backup-$(date +%F).archive.gz
-
-# 백업 매체 암호화 (스펙 6.2.3 — AEAD)
-# 운영 키와 분리된 키 체계로 한 번 더 암호화
-age -r $(cat backup_recipient.txt) \
-  backup-$(date +%F).archive.gz > backup-$(date +%F).archive.gz.age
+# 안전한 작업 PC 에서 (서버 아님)
+age-keygen -o backup-key.txt
+# 출력 예:
+#   Public key: age1qz9x...          ← 이 공개키를 .env 의 BACKUP_AGE_RECIPIENT 에 입력
+# backup-key.txt 안에 비밀키가 들어있음 ← ★서버에 두지 말 것★
 ```
+
+- **공개키(recipient)** → `.env` 의 `BACKUP_AGE_RECIPIENT` 에 입력 → 백업 컨테이너는 암호화만 가능
+- **비밀키(`backup-key.txt`)** → 비밀번호 관리자 / vault / 오프라인 매체에 보관. 복원 시에만 사용
+
+> 백업 컨테이너는 공개키만 가지므로 **자기가 만든 백업을 복호화할 수 없습니다.**
+> 서버와 백업 파일을 통째로 탈취당해도 비밀키 없이는 내용을 읽을 수 없습니다 (스펙의 "매체 분실·침해 대비").
+
+> ⚠️ `BACKUP_AGE_RECIPIENT` 가 비어 있으면 백업 컨테이너는 **실패**합니다(fail-closed).
+> 암호화 없는 백업을 막기 위함입니다. 의도적으로 평문 백업이 필요한 경우에만
+> `BACKUP_ALLOW_PLAINTEXT=true` 를 함께 설정하세요(스펙 6.2.3 미충족).
+
+#### 수동 즉시 백업 (테스트용)
+
+```bash
+docker exec ${COMPOSE_PROJECT_NAME}-mongo-backup \
+  bash -c 'BACKUP_INTERVAL=1 timeout 120 /mongodb/backup.sh' || true
+ls -l ${BACKUP_DIR}/
+```
+
+### 복원 (restore)
+
+비밀키가 있는 안전한 환경에서 수행합니다. `scripts/restore.sh` 가 복호화 + mongorestore 를 처리합니다.
+
+```bash
+# 1. 비밀키(backup-key.txt)를 복원 환경으로 가져옴 (임시)
+# 2. 암호화 백업 + 비밀키로 복원
+docker exec -e MONGO_INITDB_ROOT_PASSWORD="$MONGO_ROOT_PASS" \
+  ${COMPOSE_PROJECT_NAME}-mongo-backup \
+  /mongodb/restore.sh /backups/backup-2026-06-03_030000.archive.gz.age /path/to/backup-key.txt
+
+# 완전 덮어쓰기가 필요하면 RESTORE_DROP=true 추가 (기존 컬렉션 drop 후 복원)
+```
+
+> `age -d` 가 AEAD 인증 태그를 검증하므로, 백업 파일이 변조되었거나 키가 틀리면
+> 복호화가 실패하고 mongorestore 는 실행되지 않습니다 (스펙 6.2.3 무결성 검증 충족).
+
+#### ⚠️ 레플리케이션 ≠ 백업
+
+3노드 레플리카셋은 **하드웨어 장애** 에 대비한 가용성 장치이지 백업이 아닙니다.
+`deleteMany`/`dropDatabase` 같은 실수나 앱 버그, 랜섬웨어는 **3노드에 즉시 복제**되어
+복구할 곳이 없습니다. 과거 시점 복구·논리적 사고 대비를 위해 백업은 별도로 필요합니다.
 
 ### 자동 장애조치 동작 확인
 
@@ -312,7 +384,7 @@ docker start myapp-mongo1
 | `net.tls.mode=requireTLS` | `MONGO_TLS_REQUIRED=true` → `requireTLS` (기본) |
 | `tlsCertificateKeyFile` / `tlsCAFile` | `/pki/<node>.pem` / `/pki/ca.pem` |
 | 저장 볼륨 LUKS2 암호화 | **OS 영역** — 호스트 디스크/파티션을 LUKS2 로 설정한 위에 docker 볼륨 마운트 |
-| 백업 매체 AEAD 암호화 | 위 "백업" 섹션 참고 (`age`/`gpg`) |
+| 백업 매체 AEAD 암호화 | **mongo-backup 서비스 자동화** — mongodump→gzip→age(ChaCha20-Poly1305) 공개키 암호화, 복원 시 AEAD 태그 검증 (위 "백업" 섹션) |
 
 ## 🐛 문제 해결
 

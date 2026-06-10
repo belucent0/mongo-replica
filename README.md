@@ -30,6 +30,7 @@ Prisma 트랜잭션은 양쪽에서 모두 동작합니다.
 | 자동 장애조치 (failover) | ❌ | ✅ |
 | 노드 간 TLS 암호화 | — | ✅ (preferTLS) |
 | 노드 간 X.509 mTLS | — | ✅ (`clusterAuthMode=x509`) |
+| 자동 백업 (age/AEAD 암호화) | — | ✅ (mongo-backup 서비스) |
 | 사용 파일 | `docker-compose.yml` | `docker-compose.replicaset.yml` |
 | 환경 변수 템플릿 | `.env.example` | `.env.replicaset.example` |
 | 가이드 | **본 README → "🚀 단일 노드 배포"** | **[docs/replicaset.md](docs/replicaset.md)** |
@@ -59,7 +60,10 @@ mongodb/
     ├── init-replica-multi.sh           # 3 노드 rs.initiate
     ├── init-tls.sh                     # 단일 노드 TLS 인증서 생성
     ├── gen-secrets.sh                  # 3 노드 공유 PKI 생성 (init 컨테이너)
-    └── init-user.js                    # 사용자 생성 스크립트
+    ├── init-user.js                    # 사용자 생성 스크립트
+    ├── backup.sh                       # 백업 (mongodump→gzip→age 암호화)
+    ├── restore.sh                      # 복원 (age 복호화→mongorestore)
+    └── mongo-conn.sh                   # backup/restore 공용 접속 설정
 ```
 
 ## 🚀 단일 노드 배포
@@ -166,6 +170,14 @@ MONGO_PASS=#StrongAppPass1!
 
 # TLS 강제 여부 (기본 true = 스펙 준수)
 MONGO_TLS_REQUIRED=true
+
+# 백업 (mongo-backup 서비스)
+BACKUP_DIR=./backups                 # 호스트 백업 폴더 (bind mount)
+BACKUP_INTERVAL=86400                # 백업 주기(초). 86400=매일
+BACKUP_RETENTION_DAYS=7              # 보관 일수
+# age 공개키(recipient). 안전한 환경에서 `age-keygen` 으로 생성한 공개키를 입력.
+# 비어 있으면 백업 컨테이너는 실패한다(fail-closed). 자세한 절차는 docs/replicaset.md.
+BACKUP_AGE_RECIPIENT=
 ```
 
 ### 2. 빌드 + 기동
@@ -174,7 +186,7 @@ MONGO_TLS_REQUIRED=true
 docker compose -f docker-compose.replicaset.yml --env-file .env up -d --build
 ```
 
-`mongo-init` 컨테이너가 공유 PKI(CA · keyFile · 노드별 인증서)를 1회 생성한 뒤 종료하고, 이어서 `mongo1`(primary 후보) / `mongo2`(secondary) / `mongo3`(arbiter) 가 자동으로 합류합니다.
+`mongo-init` 컨테이너가 공유 PKI(CA · keyFile · 노드별 인증서)를 1회 생성한 뒤 종료하고, 이어서 `mongo1`(primary 후보) / `mongo2`(secondary) / `mongo3`(arbiter) 가 자동으로 합류합니다. `mongo-backup` 컨테이너가 정기적으로 암호화 백업을 호스트 폴더에 쌓습니다(자세한 키 생성·복원 절차는 [docs/replicaset.md](docs/replicaset.md)).
 
 ### 3. 검증
 
