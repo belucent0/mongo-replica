@@ -9,38 +9,12 @@ set -euo pipefail
 #   ./scripts/restore.sh <백업파일> <키파일> # 특정 백업으로 복원
 #   RESTORE_DROP=true ./scripts/restore.sh   # 덮어쓰기(컬렉션 drop 후 복원)
 #
-# 동작: .env 로드 → 백업 컨테이너로 비밀키를 잠깐 복사 → 이 스크립트를 컨테이너 안에서
-#       `--engine` 모드로 재실행해 복호화+mongorestore 수행 → 비밀키 삭제.
+# 동작: .env 로드 → 백업 컨테이너로 비밀키를 잠깐 복사 → 컨테이너 안에서
+#       age 복호화 + mongorestore 를 인라인 실행 → 비밀키 삭제.
+#       ★ 컨테이너의 restore.sh 가 아니라 안정적인 mongo-conn.sh(접속 헬퍼)만 사용하므로,
+#         백업 컨테이너 이미지가 구버전이어도(restore 코드 갱신 전이어도) 복원이 동작한다.
 # 호스트엔 docker 만 있으면 된다(mongorestore·age·CA 는 컨테이너 안).
 
-# ──────────────────────────────────────────────────────────────
-# 엔진 모드 (컨테이너 안에서 호출됨 — 사용자가 직접 쓰지 않음)
-#   /mongodb/restore.sh --engine <backup-file> [age-identity-file]
-#   .age 는 age 비밀키로 복호화(AEAD 검증) 후 mongorestore. 평문은 그대로 복원.
-# ──────────────────────────────────────────────────────────────
-if [ "${1:-}" = "--engine" ]; then
-  shift
-  # shellcheck source=/mongodb/mongo-conn.sh
-  . /mongodb/mongo-conn.sh
-  FILE="${1:?복원할 backup 파일 경로가 필요합니다}"
-  IDENTITY="${2:-}"
-  DROP_ARG=()
-  [ "${RESTORE_DROP:-false}" = "true" ] && DROP_ARG=(--drop)
-  restore_stream() { mongorestore "${MONGO_CONN_ARGS[@]}" --gzip --archive "${DROP_ARG[@]}"; }
-  case "$FILE" in
-    *.age)
-      [ -n "$IDENTITY" ] || { echo "ERROR: 암호화 백업(.age)은 age 비밀키 파일이 필요합니다."; exit 1; }
-      # age -d 가 AEAD 태그를 검증한다(변조/키 오류면 파이프가 끊겨 mongorestore 미실행).
-      age -d -i "$IDENTITY" "$FILE" | restore_stream ;;
-    *)
-      restore_stream < "$FILE" ;;
-  esac
-  exit $?
-fi
-
-# ──────────────────────────────────────────────────────────────
-# 래퍼 모드 (호스트에서 실행)
-# ──────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"   # scripts/ 의 상위 = 프로젝트 루트(.env 위치)
 cd "$PROJECT_ROOT"
@@ -142,12 +116,25 @@ set +e
 echo ""
 echo "복원 중..."
 LOG="$(mktemp)"
+# 복호화 + mongorestore 를 컨테이너 안에서 인라인 실행한다.
+# 컨테이너의 restore.sh 에 의존하지 않고 mongo-conn.sh 만 사용 → 백업 이미지 버전과 무관.
+# RESTORE_FILE/RESTORE_KEY 는 -e 로 전달(인라인 문자열 따옴표 문제 회피).
 docker exec \
   -e MONGO_INITDB_ROOT_PASSWORD="$ROOT_PASS" \
   -e MONGO_REPLICA_HOSTS="$REPLICA_HOSTS" \
   -e RESTORE_DROP="$RESTORE_DROP" \
+  -e RESTORE_FILE="/backups/$BNAME" \
+  -e RESTORE_KEY="$TMPKEY" \
   "$BACKUP_CONTAINER" \
-  /mongodb/restore.sh --engine "/backups/$BNAME" "$TMPKEY" >"$LOG" 2>&1
+  bash -c '
+    set -euo pipefail
+    . /mongodb/mongo-conn.sh
+    drop=(); if [ "${RESTORE_DROP:-false}" = "true" ]; then drop=(--drop); fi
+    case "$RESTORE_FILE" in
+      *.age) age -d -i "$RESTORE_KEY" "$RESTORE_FILE" | mongorestore "${MONGO_CONN_ARGS[@]}" --gzip --archive "${drop[@]}" ;;
+      *)     mongorestore "${MONGO_CONN_ARGS[@]}" --gzip --archive "${drop[@]}" < "$RESTORE_FILE" ;;
+    esac
+  ' >"$LOG" 2>&1
 RC=$?
 
 # --- 결과 해석 (mongorestore 원문을 사람 친화적으로) ---
