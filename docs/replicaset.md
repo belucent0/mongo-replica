@@ -331,17 +331,29 @@ ls -l ${BACKUP_DIR}/
 
 ### 복원 (restore)
 
-비밀키가 있는 안전한 환경에서 수행합니다. `scripts/restore.sh` 가 복호화 + mongorestore 를 처리합니다.
+비밀키가 있는 안전한 환경에서 수행합니다. 호스트 래퍼 **`./restore.sh`** 가
+`.env` 로드 + 비밀키 전달 + 컨테이너 엔진 호출을 한 번에 처리합니다.
 
 ```bash
-# 1. 비밀키(backup-key.txt)를 복원 환경으로 가져옴 (임시)
-# 2. 암호화 백업 + 비밀키로 복원
-docker exec -e MONGO_INITDB_ROOT_PASSWORD="$MONGO_ROOT_PASS" \
-  ${COMPOSE_PROJECT_NAME}-mongo-backup \
-  /mongodb/restore.sh /backups/backup-2026-06-03_030000.archive.gz.age /path/to/backup-key.txt
+# 대화형: 키 입력 → 최근 백업 목록 → 번호 선택 → 복원
+./restore.sh
 
-# 완전 덮어쓰기가 필요하면 RESTORE_DROP=true 추가 (기존 컬렉션 drop 후 복원)
+# 목록만 보기 (키 불필요)
+./restore.sh --list
+
+# 최신 백업으로 복원
+./restore.sh --latest /path/to/backup-key.txt
+
+# 특정 백업으로 복원
+./restore.sh backups/backup-2026-06-03_030000.archive.gz.age /path/to/backup-key.txt
+
+# 완전 덮어쓰기(기존 컬렉션 drop 후 복원)가 필요하면:
+RESTORE_DROP=true ./restore.sh --latest /path/to/backup-key.txt
 ```
+
+> `./restore.sh`(호스트 래퍼)는 내부적으로 컨테이너의 `/mongodb/restore.sh`(복호화+mongorestore 엔진)를
+> `docker exec` 로 호출합니다. mongorestore·age·CA 는 컨테이너 안에 있으므로 호스트엔 docker 만 있으면 됩니다.
+> 비밀키는 컨테이너로 잠깐 전달했다가 종료 시 삭제됩니다(서버에 영구 보관하지 않음).
 
 > `age -d` 가 AEAD 인증 태그를 검증하므로, 백업 파일이 변조되었거나 키가 틀리면
 > 복호화가 실패하고 mongorestore 는 실행되지 않습니다 (스펙 6.2.3 무결성 검증 충족).

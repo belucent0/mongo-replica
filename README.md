@@ -51,6 +51,7 @@ mongodb/
 ├── Dockerfile                          # MongoDB 커스텀 이미지 빌드 파일
 ├── docker-compose.yml                  # ★ 3 노드 레플리카셋 배포 (기본)
 ├── docker-compose.single.yml           # 단일 노드 배포
+├── restore.sh                          # 호스트용 복원 래퍼 (대화형 ./restore.sh)
 ├── .env.example                        # 3 노드(기본) 환경 변수 템플릿
 ├── .env.single.example                 # 단일 노드 환경 변수 템플릿
 ├── .env                                # 실제 환경 변수 (git에서 제외)
