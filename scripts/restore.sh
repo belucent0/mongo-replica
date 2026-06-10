@@ -23,7 +23,7 @@ ENV_FILE="${ENV_FILE:-.env}"
 [ -f "$ENV_FILE" ] || { echo "ERROR: $ENV_FILE 가 없습니다. 프로젝트 루트에서 ./scripts/restore.sh 로 실행하세요."; exit 1; }
 
 # .env 에서 필요한 값만 안전하게 추출 (전체 source 는 특수문자/공백에 취약)
-get_env() { grep -E "^$1=" "$ENV_FILE" | head -1 | cut -d= -f2- | sed -e 's/^["'"'"']//' -e 's/["'"'"']$//'; }
+get_env() { grep -m1 -E "^$1=" "$ENV_FILE" | cut -d= -f2- | sed -e 's/^["'"'"']//' -e 's/["'"'"']$//'; }
 PROJECT="$(get_env COMPOSE_PROJECT_NAME)"; PROJECT="${PROJECT:-rs}"
 BACKUP_DIR_HOST="$(get_env BACKUP_DIR)"; BACKUP_DIR_HOST="${BACKUP_DIR_HOST:-./backups}"
 ROOT_PASS="$(get_env MONGO_ROOT_PASS)"
@@ -33,11 +33,12 @@ BACKUP_CONTAINER="${PROJECT}-mongo-backup"
 docker inspect "$BACKUP_CONTAINER" >/dev/null 2>&1 || {
   echo "ERROR: '$BACKUP_CONTAINER' 컨테이너가 없습니다. 클러스터가 떠 있는지 확인하세요."; exit 1; }
 
-list_files() { ls -t "$BACKUP_DIR_HOST"/backup-*.archive.gz* 2>/dev/null | head -"${1:-10}"; }
+# 최근 백업(최신순, 최대 10개)을 한 번만 수집해 목록·선택·--latest 에서 재사용한다.
+mapfile -t FILES < <(ls -t "$BACKUP_DIR_HOST"/backup-*.archive.gz* 2>/dev/null | head -10)
 print_list() {
   local i=1 f
   echo "=== 최근 백업 (최신순) ==="
-  for f in $(list_files "${1:-10}"); do
+  for f in "${FILES[@]}"; do
     printf "%2d) %s  (%s)\n" "$i" "$(basename "$f")" "$(du -h "$f" 2>/dev/null | cut -f1)"
     i=$((i+1))
   done
@@ -47,10 +48,10 @@ print_list() {
 KEY=""; TARGET=""
 case "${1:-}" in
   --list)
-    print_list 10; exit 0 ;;
+    print_list; exit 0 ;;
   --latest)
     KEY="${2:?사용법: ./scripts/restore.sh --latest <키파일>}"
-    TARGET="$(list_files 1)"
+    TARGET="${FILES[0]:-}"
     [ -n "$TARGET" ] || { echo "ERROR: 백업이 없습니다."; exit 1; }
     ;;
   "")
@@ -58,9 +59,8 @@ case "${1:-}" in
     read -rp "age 비밀키 파일 경로: " KEY
     [ -f "$KEY" ] || { echo "ERROR: 키 파일 없음: $KEY"; exit 1; }
     echo ""
-    mapfile -t FILES < <(list_files 10)
     [ "${#FILES[@]}" -gt 0 ] || { echo "복원할 백업이 없습니다."; exit 1; }
-    print_list 10
+    print_list
     echo ""
     read -rp "무엇을 복원하시겠습니까? (번호, q=취소): " SEL
     if [ "$SEL" = "q" ]; then echo "취소됨."; exit 0; fi
@@ -139,8 +139,8 @@ RC=$?
 
 # --- 결과 해석 (mongorestore 원문을 사람 친화적으로) ---
 SUMMARY="$(grep 'restored successfully' "$LOG" | tail -1)"
-OK_N="$(printf '%s' "$SUMMARY" | grep -oE '[0-9]+ document\(s\) restored' | grep -oE '^[0-9]+' | tail -1)"; OK_N="${OK_N:-0}"
-FAIL_N="$(printf '%s' "$SUMMARY" | grep -oE '[0-9]+ document\(s\) failed' | grep -oE '^[0-9]+' | tail -1)"; FAIL_N="${FAIL_N:-0}"
+OK_N="$(printf '%s' "$SUMMARY" | grep -oE '[0-9]+ document\(s\) restored' | grep -oE '^[0-9]+')"; OK_N="${OK_N:-0}"
+FAIL_N="$(printf '%s' "$SUMMARY" | grep -oE '[0-9]+ document\(s\) failed' | grep -oE '^[0-9]+')"; FAIL_N="${FAIL_N:-0}"
 
 echo ""
 echo "── 결과 ──────────────────────────────────"
