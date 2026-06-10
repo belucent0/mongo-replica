@@ -319,11 +319,13 @@ age-keygen -o backup-key.txt
 > 암호화 없는 백업을 막기 위함입니다. 의도적으로 평문 백업이 필요한 경우에만
 > `BACKUP_ALLOW_PLAINTEXT=true` 를 함께 설정하세요(스펙 6.2.3 미충족).
 
-#### 수동 즉시 백업 (테스트용)
+#### 수동 즉시 백업 (온디맨드)
+
+`backup.sh once` 는 1회만 백업하고 종료합니다(성공 exit 0 / 실패 exit 1).
+수동 백업·동작 확인·외부 트리거에 사용합니다.
 
 ```bash
-docker exec ${COMPOSE_PROJECT_NAME}-mongo-backup \
-  bash -c 'BACKUP_INTERVAL=1 timeout 120 /mongodb/backup.sh' || true
+docker exec ${COMPOSE_PROJECT_NAME}-mongo-backup /mongodb/backup.sh once
 ls -l ${BACKUP_DIR}/
 ```
 

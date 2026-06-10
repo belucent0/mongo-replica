@@ -105,11 +105,22 @@ services:
       BACKUP_INTERVAL: ${BACKUP_INTERVAL:-86400}
       BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-7}
       BACKUP_AGE_RECIPIENT: ${BACKUP_AGE_RECIPIENT:-}
+      BACKUP_RETRY_DELAY: ${BACKUP_RETRY_DELAY:-300}
+      BACKUP_HEALTH_GRACE: ${BACKUP_HEALTH_GRACE:-3600}
+      BACKUP_MIN_BYTES: ${BACKUP_MIN_BYTES:-500}
     volumes:
       - ${BACKUP_DIR:-./backups}:/backups   # ← 호스트 폴더 bind mount
       - mongo_pki:/pki:ro
     networks:
       - mongo-net
+    # 신선도 기반 healthcheck: 마지막 정상 백업이 (INTERVAL + GRACE) 보다 오래되면 unhealthy.
+    # 일시적 실패는 재시도로 흡수되고, 정해진 기간 내 정상 백업이 없으면 docker 가 unhealthy 로 표시.
+    healthcheck:
+      test: ["CMD", "/mongodb/backup-healthcheck.sh"]
+      interval: 300s
+      timeout: 10s
+      retries: 3
+      start_period: 600s   # 첫 백업이 완료될 시간을 준다(기동 직후 즉시 1회 백업)
 
 volumes:
   mongo_pki:
