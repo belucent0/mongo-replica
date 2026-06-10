@@ -56,6 +56,7 @@ case "${1:-}" in
     ;;
   "")
     # 대화형
+    INTERACTIVE=1
     read -rp "age 비밀키 파일 경로: " KEY
     [ -f "$KEY" ] || { echo "ERROR: 키 파일 없음: $KEY"; exit 1; }
     echo ""
@@ -78,23 +79,70 @@ esac
 [ -f "$TARGET" ] || { echo "ERROR: 백업 파일 없음: $TARGET"; exit 1; }
 BNAME="$(basename "$TARGET")"
 
+# --- 복원 방식 선택 ---
+# 대화형은 묻고, 플래그 모드(--latest 등)는 RESTORE_DROP 환경변수로 제어한다.
+if [ "${INTERACTIVE:-0}" = "1" ]; then
+  echo ""
+  echo "복원 방식을 선택하세요:"
+  echo "  1) 병합 (기본)  — 삭제·누락된 문서만 되살립니다. 기존 데이터는 그대로 둡니다."
+  echo "  2) 덮어쓰기      — 컬렉션을 비우고 백업 시점 상태로 되돌립니다."
+  echo "                    ⚠️  백업 이후에 생기거나 수정된 데이터는 사라집니다."
+  read -rp "선택 [1]: " MODE
+  case "${MODE:-1}" in
+    2) RESTORE_DROP=true ;;
+    *) RESTORE_DROP=false ;;
+  esac
+fi
+RESTORE_DROP="${RESTORE_DROP:-false}"
+
 echo ""
 echo "복원 대상 : $BNAME"
 echo "키 파일   : $KEY"
-[ "${RESTORE_DROP:-false}" = "true" ] && echo "모드      : 덮어쓰기(--drop)" || echo "모드      : 병합(기존 데이터 유지, 덮어쓰려면 RESTORE_DROP=true)"
-read -rp "복원하시겠습니까? (y/N): " OK
-[ "$OK" = "y" ] || [ "$OK" = "Y" ] || { echo "취소됨."; exit 0; }
+if [ "$RESTORE_DROP" = "true" ]; then
+  echo "복원 방식 : 덮어쓰기 (백업 시점으로 완전 복구 — 이후 변경분 손실)"
+  read -rp "정말 진행하려면 'overwrite' 를 입력하세요 (취소=엔터): " CONFIRM
+  [ "$CONFIRM" = "overwrite" ] || { echo "취소됨."; exit 0; }
+else
+  echo "복원 방식 : 병합 (없는 문서만 추가, 기존 데이터 유지)"
+  read -rp "복원하시겠습니까? (y/N): " OK
+  [ "$OK" = "y" ] || [ "$OK" = "Y" ] || { echo "취소됨."; exit 0; }
+fi
 
 # 비밀키를 컨테이너로 임시 전달 → 복원 → 종료 시 키 삭제
 TMPKEY="/tmp/.restore-key-$$"
-docker cp "$KEY" "$BACKUP_CONTAINER:$TMPKEY"
+docker cp "$KEY" "$BACKUP_CONTAINER:$TMPKEY" >/dev/null
 trap 'docker exec "$BACKUP_CONTAINER" rm -f "$TMPKEY" >/dev/null 2>&1 || true' EXIT
 
+# 여기부터는 mongorestore 의 종료코드/출력을 직접 해석하므로 set -e 를 끈다(스크립트 끝).
+set +e
+echo ""
+echo "복원 중..."
+LOG="$(mktemp)"
 docker exec \
   -e MONGO_INITDB_ROOT_PASSWORD="$ROOT_PASS" \
   -e MONGO_REPLICA_HOSTS="$REPLICA_HOSTS" \
-  -e RESTORE_DROP="${RESTORE_DROP:-false}" \
+  -e RESTORE_DROP="$RESTORE_DROP" \
   "$BACKUP_CONTAINER" \
-  /mongodb/restore.sh "/backups/$BNAME" "$TMPKEY"
+  /mongodb/restore.sh "/backups/$BNAME" "$TMPKEY" >"$LOG" 2>&1
+RC=$?
 
-echo "복원 완료: $BNAME"
+# --- 결과 해석 (mongorestore 원문을 사람 친화적으로) ---
+SUMMARY="$(grep 'restored successfully' "$LOG" | tail -1)"
+OK_N="$(printf '%s' "$SUMMARY" | grep -oE '[0-9]+ document\(s\) restored' | grep -oE '^[0-9]+' | tail -1)"; OK_N="${OK_N:-0}"
+FAIL_N="$(printf '%s' "$SUMMARY" | grep -oE '[0-9]+ document\(s\) failed' | grep -oE '^[0-9]+' | tail -1)"; FAIL_N="${FAIL_N:-0}"
+
+echo ""
+echo "── 결과 ──────────────────────────────────"
+if [ "$RC" -ne 0 ] && [ -z "$SUMMARY" ]; then
+  echo "❌ 복원 실패 (복호화·연결·인증 오류일 수 있음). 로그 마지막:"
+  tail -5 "$LOG" | sed 's/^/   /'
+  rm -f "$LOG"; exit 1
+elif [ "$RESTORE_DROP" = "true" ]; then
+  echo "✅ 백업 시점으로 복구 완료 (복원 ${OK_N}건)."
+elif [ "$FAIL_N" -gt 0 ]; then
+  echo "✅ 복원 ${OK_N}건. ${FAIL_N}건은 이미 존재하여 건너뜀(병합 모드 — 데이터 손실 아님)."
+  echo "   백업 시점으로 완전히 되돌리려면 '덮어쓰기' 모드로 다시 실행하세요."
+else
+  echo "✅ 복원 ${OK_N}건 완료."
+fi
+rm -f "$LOG"
