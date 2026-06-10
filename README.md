@@ -51,7 +51,6 @@ mongodb/
 ├── Dockerfile                          # MongoDB 커스텀 이미지 빌드 파일
 ├── docker-compose.yml                  # ★ 3 노드 레플리카셋 배포 (기본)
 ├── docker-compose.single.yml           # 단일 노드 배포
-├── restore.sh                          # 호스트용 복원 래퍼 (대화형 ./restore.sh)
 ├── .env.example                        # 3 노드(기본) 환경 변수 템플릿
 ├── .env.single.example                 # 단일 노드 환경 변수 템플릿
 ├── .env                                # 실제 환경 변수 (git에서 제외)
@@ -67,7 +66,7 @@ mongodb/
     ├── init-user.js                    # 사용자 생성 스크립트
     ├── backup.sh                       # 백업 (mongodump→gzip→age 암호화)
     ├── backup-healthcheck.sh           # 백업 신선도 healthcheck
-    ├── restore.sh                      # 복원 (age 복호화→mongorestore)
+    ├── restore.sh                      # ★ 복원 진입점 (호스트: ./scripts/restore.sh, 대화형)
     └── mongo-conn.sh                   # backup/restore 공용 접속 설정
 ```
 
