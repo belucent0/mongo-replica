@@ -1,13 +1,13 @@
 # MongoDB 3노드 레플리카셋 + TLS 자동화 사용법
 
-`docker-compose.replicaset.yml` 기반 **3노드 레플리카셋 배포** 가이드입니다.
+`docker-compose.yml` 기반 **3노드 레플리카셋 배포** 가이드입니다.
 단일 노드 배포는 [상위 README](../README.md) 를 참고하세요.
 
 ## 🎯 언제 쓰나
 
 | 상황 | 추천 구성 |
 |---|---|
-| 단일 호스트 · 개발/테스트 · Prisma 트랜잭션만 필요 | 단일 노드 (`docker-compose.yml`) |
+| 단일 호스트 · 개발/테스트 · Prisma 트랜잭션만 필요 | 단일 노드 (`docker-compose.single.yml`) |
 | **운영 환경 배포 · 가용성 필요 · 보안 스펙 준수** | **3노드 (이 문서)** |
 | DB 노드를 여러 물리 서버에 분산 | 3노드 + 네트워크 설정 변경 |
 
@@ -23,7 +23,7 @@
 ## 🏗️ 구성 요소
 
 ```
-docker compose -f docker-compose.replicaset.yml up
+docker compose up
   │
   ├─ mongo-init  (1회 실행 후 종료)
   │   └─ gen-secrets.sh → 공유 PKI 생성 (/pki 공유 볼륨)
@@ -69,10 +69,10 @@ docker compose -f docker-compose.replicaset.yml up
 
 ## ⚙️ 환경 변수 설정
 
-`.env.replicaset.example` 를 복사해서 `.env` 또는 `.env.local` 로 저장 후 값 수정:
+`.env.example` 를 복사해서 `.env` 또는 `.env.local` 로 저장 후 값 수정:
 
 ```bash
-cp .env.replicaset.example .env
+cp .env.example .env
 ```
 
 ### 필수 항목
@@ -128,24 +128,24 @@ docker save mongo-rs:1.0.0 -o mongo-rs-1.0.0.tar
 # ─── 2. 운영 호스트로 전달 ───
 # 아래 파일들을 같이 전달:
 #   - mongo-rs-1.0.0.tar           (이미지)
-#   - docker-compose.replicaset.yml
-#   - .env.replicaset.example       (운영 환경에 맞춰 .env 로 수정)
+#   - docker-compose.yml
+#   - .env.example       (운영 환경에 맞춰 .env 로 수정)
 #   - docs/replicaset.md            (이 문서)
 
 # ─── 3. 운영 호스트에서 ───
 docker load -i mongo-rs-1.0.0.tar
 docker images | grep mongo-rs        # 이미지 로드 확인
 
-cp .env.replicaset.example .env
+cp .env.example .env
 vi .env                              # 비밀번호·호스트 수정
 
-docker compose -f docker-compose.replicaset.yml up -d
+docker compose up -d
 ```
 
 ### 개발 환경 (소스에서 직접 빌드)
 
 ```bash
-docker compose -f docker-compose.replicaset.yml --env-file .env up -d --build
+docker compose --env-file .env up -d --build
 ```
 
 `--build` 는 코드 수정 시마다 빌드를 강제합니다. 운영 호스트에서는 사용하지 않습니다.
@@ -237,16 +237,16 @@ MONGO_DATABASE_URL=mongodb://appUser:%23StrongAppPass1%21@mongo1:27017,mongo2:27
 
 ```bash
 # 로그 확인
-docker compose -f docker-compose.replicaset.yml logs -f mongo1
+docker compose logs -f mongo1
 
 # 재시작
-docker compose -f docker-compose.replicaset.yml restart
+docker compose restart
 
 # 정지 (데이터/PKI 유지)
-docker compose -f docker-compose.replicaset.yml down
+docker compose down
 
 # 정지 + 볼륨 삭제 (⚠️ 데이터·인증서 모두 삭제)
-docker compose -f docker-compose.replicaset.yml down -v
+docker compose down -v
 ```
 
 ### 셸 접속 (root)
@@ -267,7 +267,7 @@ docker exec -it myapp-mongo1 \
 
 ### 백업 (자동 — mongo-backup 서비스)
 
-`docker-compose.replicaset.yml` 의 **mongo-backup** 컨테이너가 정기적으로 백업을 수행합니다.
+`docker-compose.yml` 의 **mongo-backup** 컨테이너가 정기적으로 백업을 수행합니다.
 별도 명령 없이 `docker compose up -d` 만으로 동작합니다.
 
 ```
@@ -417,7 +417,7 @@ ERROR: PKI not ready after ~300s. Expected node cert: /pki/mongo1.pem
 해결: 두 값을 일치시키거나, 호스트 추가 후 `mongo-init` 재실행:
 
 ```bash
-docker compose -f docker-compose.replicaset.yml restart mongo-init
+docker compose restart mongo-init
 # (PKI 가 누락된 노드 인증서만 추가 생성됨 — 기존 CA/keyFile 재사용)
 ```
 
@@ -455,9 +455,9 @@ docker ps -a --filter "name=${COMPOSE_PROJECT_NAME}"
 
 ```bash
 # ⚠️ 주의: 인증서 변경 시 노드 간 통신이 일시적으로 끊김
-docker compose -f docker-compose.replicaset.yml down
+docker compose down
 docker volume rm ${COMPOSE_PROJECT_NAME}_mongo_pki
-docker compose -f docker-compose.replicaset.yml up -d
+docker compose up -d
 # → mongo-init 가 새 PKI 를 생성
 # → 모든 노드가 새 인증서로 다시 핸드셰이크
 # 데이터 볼륨(mongo[1-3]_data)은 그대로 → 데이터는 보존
@@ -508,11 +508,11 @@ docker compose -f docker-compose.replicaset.yml up -d
 
 ```bash
 # 1. .env 의 MONGO_REPLICA_HOSTS / MONGO_ARBITER_HOST 수정
-# 2. docker-compose.replicaset.yml 에 서비스(mongo4 등) 추가 (필요 시)
+# 2. docker-compose.yml 에 서비스(mongo4 등) 추가 (필요 시)
 # 3. PKI 재생성 (또는 누락된 노드 인증서만 추가 생성)
-docker compose -f docker-compose.replicaset.yml restart mongo-init
+docker compose restart mongo-init
 # 4. 새 노드 기동
-docker compose -f docker-compose.replicaset.yml up -d
+docker compose up -d
 # 5. rs.add() / rs.remove() 로 멤버 구성 수동 조정 (필요 시)
 ```
 
@@ -551,7 +551,7 @@ DOCKER_NETWORK_NAME=myapp-net   # 앱이 만든 네트워크 이름
 # (다른 값은 시나리오 A 와 동일)
 ```
 
-`docker-compose.replicaset.yml` 의 networks 섹션 한 줄 추가:
+`docker-compose.yml` 의 networks 섹션 한 줄 추가:
 ```yaml
 networks:
   mongo-net:
@@ -574,7 +574,7 @@ MONGO_REPLICA_HOSTS=192.168.1.10:27017,192.168.1.11:27017
 MONGO_ARBITER_HOST=192.168.1.12:27017
 ```
 
-`docker-compose.replicaset.yml` 을 호스트별로 분할하거나, 단일 compose 에서 자기 노드 서비스만 활성화. 각 노드에 ports 매핑 추가:
+`docker-compose.yml` 을 호스트별로 분할하거나, 단일 compose 에서 자기 노드 서비스만 활성화. 각 노드에 ports 매핑 추가:
 ```yaml
 mongo1:
   ...
