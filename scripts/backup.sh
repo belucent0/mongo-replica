@@ -7,7 +7,8 @@ set -euo pipefail
 #
 # 환경변수:
 #   MONGO_REPLICA_HOSTS          : 데이터 노드 목록 (host:port,host:port)
-#   MONGO_INITDB_ROOT_USERNAME   : 백업에 사용할 계정 (기본 root)
+#   MONGO_INITDB_ROOT_USERNAME   : 백업 접속 계정. compose 는 최소권한 backup 롤 계정
+#                                  (backupUser)을 주입한다(root 아님). 복원만 root 사용.
 #   MONGO_INITDB_ROOT_PASSWORD   : 위 계정 비밀번호 (필수)
 #   BACKUP_DIR                   : 컨테이너 내 백업 경로 (호스트 폴더가 마운트됨, 기본 /backups)
 #   BACKUP_INTERVAL              : 백업 주기(초). 기본 86400(매일)

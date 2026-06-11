@@ -63,7 +63,8 @@ mongodb/
     ├── init-replica-multi.sh           # 3 노드 rs.initiate
     ├── init-tls.sh                     # 단일 노드 TLS 인증서 생성
     ├── gen-secrets.sh                  # 3 노드 공유 PKI 생성 (init 컨테이너)
-    ├── init-user.js                    # 사용자 생성 스크립트
+    ├── init-user.js                    # root·앱 사용자 생성 스크립트
+    ├── init-backup-user.js             # 백업 전용 최소권한 계정(backup 롤) 생성
     ├── backup.sh                       # 백업 (mongodump→gzip→age 암호화)
     ├── backup-healthcheck.sh           # 백업 신선도 healthcheck
     ├── restore.sh                      # ★ 복원 진입점 (호스트: ./scripts/restore.sh, 대화형)
@@ -166,6 +167,9 @@ MONGO_ROOT_PASS=#StrongRootPass1!
 MONGO_NAME=myapp
 MONGO_USER=appUser
 MONGO_PASS=#StrongAppPass1!
+# 백업 전용 최소권한 계정(backup 롤) — 백업 컨테이너가 root 대신 이 계정으로 mongodump
+MONGO_BACKUP_USER=backupUser
+MONGO_BACKUP_PASS=#StrongBackupPass1!
 
 # TLS 강제 여부 (기본 true = 스펙 준수)
 MONGO_TLS_REQUIRED=true

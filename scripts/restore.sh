@@ -120,6 +120,7 @@ LOG="$(mktemp)"
 # 컨테이너의 restore.sh 에 의존하지 않고 mongo-conn.sh 만 사용 → 백업 이미지 버전과 무관.
 # RESTORE_FILE/RESTORE_KEY 는 -e 로 전달(인라인 문자열 따옴표 문제 회피).
 docker exec \
+  -e MONGO_INITDB_ROOT_USERNAME=root \
   -e MONGO_INITDB_ROOT_PASSWORD="$ROOT_PASS" \
   -e MONGO_REPLICA_HOSTS="$REPLICA_HOSTS" \
   -e RESTORE_DROP="$RESTORE_DROP" \

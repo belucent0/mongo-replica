@@ -6,3 +6,6 @@
 # entrypoint 는 파일이 없으면 뷰 생성 단계를 자동으로 건너뛴다.
 scripts/init-view.js
 .commit-msg.tmp
+
+# OMC 작업 도구 내부 상태 (패키지와 무관)
+.omc/

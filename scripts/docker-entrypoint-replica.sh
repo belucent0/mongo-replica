@@ -153,6 +153,18 @@ if [ "$ROLE" = "primary" ] && [ ! -f "$INIT_DONE_MARKER" ]; then
       --quiet --file /mongodb/init-user.js
   echo "Application user step done."
 
+  # 백업 전용 계정 생성 (root 인증, admin DB, 내장 'backup' 롤만)
+  #   상시 도는 백업 컨테이너가 root 대신 이 최소권한 계정으로 mongodump 한다.
+  #   실제 게이트는 PASS (USER 는 compose 가 backupUser 로 기본값 부여). 미설정 시 건너뜀.
+  if [ -n "${MONGO_BACKUP_PASS:-}" ]; then
+    echo "Creating backup user (backup role)..."
+    env MONGO_BACKUP_USER="$MONGO_BACKUP_USER" MONGO_BACKUP_PASS="$MONGO_BACKUP_PASS" \
+      mongosh "$LOCAL_ADMIN" "${MONGOSH_TLS[@]}" \
+        -u root -p "$ROOT_PASS_SAVED" --authenticationDatabase admin \
+        --quiet --file /mongodb/init-backup-user.js
+    echo "Backup user step done."
+  fi
+
   # 뷰 생성 (root 인증, 앱 DB)
   if [ -f /mongodb/init-view.js ]; then
     echo "Creating views..."

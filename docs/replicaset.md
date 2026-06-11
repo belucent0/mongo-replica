@@ -270,6 +270,34 @@ docker exec -it myapp-mongo1 \
 `docker-compose.yml` 의 **mongo-backup** 컨테이너가 정기적으로 백업을 수행합니다.
 별도 명령 없이 `docker compose up -d` 만으로 동작합니다.
 
+> **최소권한 계정**: 상시 도는 백업 컨테이너는 root 가 아니라 내장 `backup` 롤만 가진 전용
+> 계정(`MONGO_BACKUP_USER`, primary 가 init 시 자동 생성)으로 mongodump 합니다. 이 계정은
+> 읽기만 가능해, 유출돼도 데이터를 쓰거나 지우거나 서버를 제어할 수 없습니다.
+>
+> 복원(쓰기)은 운영자가 `./scripts/restore.sh` 로 수행하며, **그때만** root 를 사용합니다
+> (restore.sh 가 `docker exec` 시점에 root 자격증명을 백업 컨테이너에 일시 주입 → mongorestore
+> 종료와 함께 사라짐). 즉 백업 컨테이너는 **평상시 root-free, 운영자 복원 중에만 일시적으로
+> root 를 받습니다**. 복원은 드물고 운영자가 직접 실행하므로 수용 가능한 트레이드오프입니다.
+>
+> ⚠️ **기존(이미 초기화된) 클러스터 업그레이드** (sentinel 존재 → init 이 backupUser 를
+> 자동 생성하지 않음). 순서대로:
+> ```bash
+> # 1) .env 에 두 변수 추가 (값은 자유, 단 2·3 에서 동일하게 사용)
+> #    MONGO_BACKUP_USER=backupUser
+> #    MONGO_BACKUP_PASS=<강한 비밀번호>
+> # 2) mongo1 을 새 env 로 재생성 (init 재실행 아님, env 주입용)
+> docker compose up -d mongo1
+> # 3) PRIMARY 에서 멱등 스크립트로 backupUser 1회 생성 (비밀번호는 컨테이너 env 로 전달, cmdline 노출 X)
+> #    mongo1 이 PRIMARY 인지 먼저 확인: rs.status(). 아니면 현재 PRIMARY 노드로 바꿔 실행.
+> docker exec <프로젝트>-mongo1 bash -c \
+>   'mongosh "mongodb://127.0.0.1:27017/admin?directConnection=true" \
+>     --tls --tlsCAFile /pki/ca.pem --tlsAllowInvalidHostnames \
+>     -u root -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin \
+>     --quiet --file /mongodb/init-backup-user.js'
+> # 4) 백업 컨테이너 재생성
+> docker compose up -d mongo-backup
+> ```
+
 ```
 mongo-backup 동작:
   secondaryPreferred 로 mongodump (평소 secondary 에서 읽어 primary 부하 최소화,
