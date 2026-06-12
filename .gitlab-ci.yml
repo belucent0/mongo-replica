@@ -1,0 +1,20 @@
+# MongoDB 레플리카셋 이미지 파이프라인
+#   공통 로직은 aimm-release-ci-templates/infra-image-release.yml 에서 가져온다(include).
+#   이 파일은 이미지별 값만 정의 + 스모크 스크립트(scripts/smoke-replica.sh)를 보유한다.
+#
+#   validate (MR / release push): docker build + 레플리카셋 스모크
+#   release  (v* 태그):            GHCR push(ghcr.io/.../mongo-replica) + 오프라인 tar + Release
+#
+#   필요 CI 변수: GHCR_USERNAME, GHCR_TOKEN (등록됨). 러너 tag: release-dev.
+include:
+  - project: apps/timblo/aimm-release-ci-templates
+    file: /infra-image-release.yml
+    ref: feat/infra-image-release   # ★검증용 브랜치 — green 확인 후 태그(v1.x.x)로 교체
+
+variables:
+  GHCR_IMAGE: ghcr.io/timbel-timblo-onpremise/mongo-replica
+  IMAGE_SLUG: mongo-replica
+  RELEASE_TITLE: "MongoDB 레플리카셋 이미지"
+  BASE_LABEL: "mongo:8.0.17"
+  DIFF_PATHS: "scripts Dockerfile docker-compose.yml docker-compose.single.yml"
+  SMOKE_SCRIPT: "scripts/smoke-replica.sh"
