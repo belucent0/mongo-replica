@@ -9,7 +9,7 @@
 include:
   - project: apps/timblo/aimm-release-ci-templates
     file: /infra-image-release.yml
-    ref: feat/infra-image-release   # ★검증용 브랜치 — green 확인 후 태그(v1.x.x)로 교체
+    ref: v1.3.0   # aimm-release-ci-templates 인프라 템플릿 첫 버전(태그 핀, 재현성)
 
 variables:
   GHCR_IMAGE: ghcr.io/timbel-timblo-onpremise/mongo-replica
