@@ -1,0 +1,157 @@
+# 3노드 레플리카셋 (데이터 2 + Arbiter 1) + TLS 자동화
+#
+# 구성:
+#   mongo-init : private PKI(CA key/keyFile/노드 인증서) + public CA 1회 생성 후 종료
+#   mongo1     : primary 후보 (데이터)
+#   mongo2     : secondary (데이터)
+#   mongo3     : arbiter (투표 전용, 데이터 없음)
+#
+# 사용 (이 파일이 기본 — 레플리카셋이 기본 배포 모드):
+#   cp .env.example .env        # 값 수정 (BACKUP_AGE_RECIPIENT 등)
+#   docker compose up -d --build
+# (단일 노드 모드는 docker-compose.single.yml 참고)
+
+# 공통 정의 (YAML anchor) — 모든 mongo 노드가 재사용
+x-mongo-healthcheck: &mongo-healthcheck
+  test: ["CMD", "mongosh", "--tls", "--tlsCAFile", "/pki/ca.pem", "--tlsAllowInvalidHostnames", "--quiet", "--eval", "db.adminCommand('ping')"]
+  interval: 30s
+  timeout: 10s
+  retries: 3
+  start_period: 120s
+
+x-mongo-node-common: &mongo-node-common
+  image: ${MONGO_IMAGE:-mongo-rs:latest}
+  depends_on:
+    mongo-init:
+      condition: service_completed_successfully
+  restart: always
+  entrypoint: ["/mongodb/docker-entrypoint-replica.sh"]
+  networks:
+    - mongo-net
+  healthcheck: *mongo-healthcheck
+
+x-mongo-node-env: &mongo-node-env
+  MONGO_REPLICA_HOSTS: ${MONGO_REPLICA_HOSTS}
+  MONGO_ARBITER_HOST: ${MONGO_ARBITER_HOST:-}
+  MONGO_TLS_REQUIRED: ${MONGO_TLS_REQUIRED:-true}
+
+services:
+  mongo-init:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${MONGO_IMAGE:-mongo-rs:latest}
+    container_name: ${COMPOSE_PROJECT_NAME:-rs}-mongo-init
+    entrypoint: ["/mongodb/gen-secrets.sh"]
+    environment:
+      MONGO_REPLICA_HOSTS: ${MONGO_REPLICA_HOSTS}
+      MONGO_ARBITER_HOST: ${MONGO_ARBITER_HOST:-}
+    volumes:
+      - mongo_pki:/pki
+      - mongo_ca:/pki-public
+    networks:
+      - mongo-net
+
+  mongo1:
+    <<: *mongo-node-common
+    container_name: ${COMPOSE_PROJECT_NAME:-rs}-mongo1
+    environment:
+      <<: *mongo-node-env
+      MONGO_ROLE: primary
+      MONGO_NODE_NAME: mongo1
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASS}
+      MONGO_NAME: ${MONGO_NAME}
+      MONGO_USER: ${MONGO_USER}
+      MONGO_PASS: ${MONGO_PASS}
+      # 백업 전용 최소권한 계정(backup 롤) — primary 가 init 시 생성.
+      # :- 빈 기본값: 기존(이미 초기화된) 클러스터가 .env 갱신 전 재기동해도 전체 스택이
+      #   하드실패하지 않게 한다. 미설정 시 backupUser 생성은 건너뛴다(마이그레이션 노트 참고).
+      MONGO_BACKUP_USER: ${MONGO_BACKUP_USER:-backupUser}
+      MONGO_BACKUP_PASS: ${MONGO_BACKUP_PASS:-}
+    volumes:
+      - mongo1_data:/data/db
+      - mongo_pki:/pki:ro
+
+  mongo2:
+    <<: *mongo-node-common
+    container_name: ${COMPOSE_PROJECT_NAME:-rs}-mongo2
+    environment:
+      <<: *mongo-node-env
+      MONGO_ROLE: secondary
+      MONGO_NODE_NAME: mongo2
+    volumes:
+      - mongo2_data:/data/db
+      - mongo_pki:/pki:ro
+
+  mongo3:
+    <<: *mongo-node-common
+    container_name: ${COMPOSE_PROJECT_NAME:-rs}-mongo3
+    environment:
+      <<: *mongo-node-env
+      MONGO_ROLE: arbiter
+      MONGO_NODE_NAME: mongo3
+    volumes:
+      - mongo3_data:/data/db
+      - mongo_pki:/pki:ro
+
+  # 백업 전용 컨테이너:  mongodump(secondaryPreferred) → gzip → age 암호화 → 호스트 폴더
+  # 호스트 폴더(${BACKUP_DIR})에 암호화 백업이 쌓이므로 컨테이너를 지워도 백업은 보존된다.
+  mongo-backup:
+    image: ${MONGO_IMAGE:-mongo-rs:latest}
+    container_name: ${COMPOSE_PROJECT_NAME:-rs}-mongo-backup
+    depends_on:
+      mongo1:
+        condition: service_healthy
+    restart: always
+    entrypoint: ["/mongodb/backup.sh"]
+    environment:
+      MONGO_REPLICA_HOSTS: ${MONGO_REPLICA_HOSTS}
+      # 최소권한 backup 롤 계정으로 mongodump (root 자격증명을 상시 컨테이너에 두지 않음).
+      # 복원(쓰기)은 운영자가 restore.sh 로 수행하며 그때만 root 를 쓴다.
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_BACKUP_USER:-backupUser}
+      # 미설정 시 백업은 인증 실패로 재시도(healthcheck 가 감지) — 전체 스택은 정상 기동.
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_BACKUP_PASS:-}
+      BACKUP_INTERVAL: ${BACKUP_INTERVAL:-86400}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-7}
+      BACKUP_AGE_RECIPIENT: ${BACKUP_AGE_RECIPIENT:-}
+      BACKUP_RETRY_DELAY: ${BACKUP_RETRY_DELAY:-30}
+      BACKUP_HEALTH_GRACE: ${BACKUP_HEALTH_GRACE:-3600}
+      BACKUP_MIN_BYTES: ${BACKUP_MIN_BYTES:-500}
+    volumes:
+      - ${BACKUP_DIR:-./backups}:/backups   # ← 호스트 폴더 bind mount
+      - mongo_ca:/pki:ro                    # ca.pem only
+    networks:
+      - mongo-net
+    # 신선도 기반 healthcheck: 마지막 정상 백업이 (INTERVAL + GRACE) 보다 오래되면 unhealthy.
+    # 일시적 실패는 재시도로 흡수되고, 정해진 기간 내 정상 백업이 없으면 docker 가 unhealthy 로 표시.
+    healthcheck:
+      test: ["CMD", "/mongodb/backup-healthcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s   # 첫 백업/초기 재시도 시간을 준다
+
+volumes:
+  mongo_pki:
+    external: true
+    name: ${COMPOSE_PROJECT_NAME:-rs}_mongo_pki
+  mongo_ca:
+    external: true
+    name: ${COMPOSE_PROJECT_NAME:-rs}_mongo_ca
+  mongo1_data:
+    external: true
+    name: ${COMPOSE_PROJECT_NAME:-rs}_mongo1_data
+  mongo2_data:
+    external: true
+    name: ${COMPOSE_PROJECT_NAME:-rs}_mongo2_data
+  mongo3_data:
+    external: true
+    name: ${COMPOSE_PROJECT_NAME:-rs}_mongo3_data
+
+networks:
+  mongo-net:
+    name: ${DOCKER_NETWORK_NAME:-mongo-rs-net}
+    # 기존 API 네트워크(예: app-net)에 MongoDB 를 붙이는 구성이 기본.
+    # prepare-install.sh 가 네트워크가 없으면 생성한다.
+    external: true

@@ -1,0 +1,171 @@
+MongoDB 3노드 레플리카셋 전환 퀵스타트
+
+전제:
+- 기존 legacy package MongoDB는 단일 멤버 replicaSet(rs0) 구성이다.
+- 기존 데이터는 샘플/테스트 데이터뿐이므로 새 3노드 클러스터를 빈 DB로 올린다.
+- 기존 DB는 바로 삭제하지 말고 dump/볼륨을 일정 기간 보관한다.
+
+===================================================
+1. 패키지 압축 해제
+
+cd /data/mongodb-pacakge
+tar -xzf mongodb-package-1.0.2-files.tar.gz --strip-components=1
+chmod +x scripts/*.sh
+
+===================================================
+2. 설치 준비
+
+./scripts/prepare-install.sh
+
+prepare-install.sh가 처리하는 것:
+- mongo-replica 이미지 로드
+- backup-key/backup-key.txt 생성
+- .env 생성
+- external Docker volume 생성
+- external Docker network 생성
+
+.env 핵심값 확인:
+
+vi .env
+
+COMPOSE_PROJECT_NAME=rs
+MONGO_IMAGE=mongo-replica:1.0.2
+DOCKER_NETWORK_NAME=app-net
+
+MONGO_NAME=myapp
+MONGO_USER=appUser
+MONGO_PASS=CHANGE_ME_APP
+MONGO_ROOT_PASS=CHANGE_ME_ROOT
+
+BACKUP_AGE_RECIPIENT=age1...
+
+===================================================
+3. MongoDB 기동 및 상태 확인
+
+docker compose up -d
+sleep 60
+./scripts/check-status.sh
+
+정상 기준:
+- mongo1, mongo2 중 하나가 PRIMARY
+- 다른 하나가 SECONDARY
+- mongo3가 ARBITER
+- app tls ping 결과가 ok: 1
+- backup health가 healthy
+
+===================================================
+4. API 서비스에 CA 마운트
+
+MongoDB에 직접 연결하는 API 서비스마다 public CA 볼륨을 읽기 전용으로 추가한다.
+COMPOSE_PROJECT_NAME=rs 기준 public CA 볼륨명은 rs_mongo_ca 이다.
+
+services:
+  app-api:
+    volumes:
+      - rs_mongo_ca:/certs:ro
+
+  worker-api:
+    volumes:
+      - rs_mongo_ca:/certs:ro
+
+volumes:
+  rs_mongo_ca:
+    external: true
+
+===================================================
+5. 애플리케이션 MongoDB URL 교체
+
+비밀번호 특수문자는 URL 인코딩한다.
+- # -> %23
+- ! -> %21
+
+mongodb://appUser:CHANGE_ME_APP@mongo1:27017,mongo2:27017/myapp?replicaSet=rs0&authSource=myapp&tls=true&tlsCAFile=/certs/ca.pem
+
+===================================================
+6. API 재시작 및 앱 테스트
+
+cd /data/myapp
+docker compose up -d
+
+확인:
+- API health check
+- 애플리케이션 MongoDB 연결
+- 기본 읽기/쓰기
+- 애플리케이션 읽기/쓰기 테스트
+
+정상 확인 후 기존 MongoDB는 중지한다.
+기존 볼륨과 dump 파일은 바로 삭제하지 말고 일정 기간 보관한다.
+
+===================================================
+7. 백업 테스트
+
+docker exec rs-mongo-backup /mongodb/backup.sh once
+ls -lh backups
+
+정상 예시:
+
+backup done: /backups/backup-YYYY-MM-DD_HHMMSS.archive.gz.age
+
+백업 목록 확인:
+
+./scripts/restore.sh --list
+
+===================================================
+8. 복원 테스트
+
+시점 복원 테스트:
+
+1. 테스트 데이터 A 생성
+2. 백업 1회 실행
+
+docker exec rs-mongo-backup /mongodb/backup.sh once
+
+3. 테스트 데이터 B 생성
+4. 복원 실행
+
+./scripts/restore.sh
+
+5. A 생성 직후 만든 백업 선택
+6. Restore mode는 overwrite 선택
+7. 확인 문구로 overwrite 입력
+8. 앱에서 A는 보이고 B는 안 보이면 정상
+
+복원 방식:
+- merge: 기존 데이터 유지, 없는 문서만 복원
+- overwrite: .env의 MONGO_NAME 앱 DB를 먼저 비운 뒤 선택한 백업 시점으로 복원
+
+주의:
+- 운영 DB에서 overwrite 복원 테스트를 바로 하지 말고 테스트 환경에서 먼저 검증한다.
+- MongoDB 복원은 MongoDB 데이터만 되돌린다.
+- MongoDB 외부 스토리지를 함께 쓰는 애플리케이션이라면 해당 스토리지도 같은 시점으로 복원되어야 한다.
+
+===================================================
+9. 운영 명령
+
+일반 중지/시작:
+
+docker compose stop
+docker compose start
+
+compose 변경 반영:
+
+docker compose up -d
+
+컨테이너 제거, 데이터 유지:
+
+docker compose down
+
+완전 초기화가 필요할 때만:
+
+docker compose down
+docker volume rm rs_mongo1_data rs_mongo2_data rs_mongo3_data rs_mongo_pki rs_mongo_ca
+
+===================================================
+10. 중요 주의사항
+
+- backup-key/backup-key.txt는 복원용 비밀키다. 반드시 안전하게 보관한다.
+- 백업 컨테이너는 age 공개키만 가지고 있으므로 백업 암호화만 가능하고, 혼자서는 복호화할 수 없다.
+- BACKUP_AGE_RECIPIENT가 비어 있으면 백업 컨테이너는 fail-closed로 실패한다.
+- API 서비스가 app-net에 붙어 있어야 mongo1, mongo2 DNS가 해석된다.
+- 앱 컨테이너 내부에 /certs/ca.pem이 실제로 있어야 tlsCAFile이 동작한다.
+- ca.pem은 공개 CA 인증서이고, ca.key/mongodb-keyfile/mongo*.pem은 앱에 전달하지 않는다.

@@ -1,0 +1,12 @@
+.git
+
+.env
+.env.local
+
+backups
+logs
+mongodb/data
+
+*.archive.gz
+*.archive.gz.age
+*.tmp

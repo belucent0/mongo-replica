@@ -1,0 +1,45 @@
+# 단일 노드 (1-멤버 레플리카셋) — 개발/테스트, Replica Set 연결 조건만 필요할 때.
+# 운영/보안 스펙 배포는 기본 docker-compose.yml(3노드)을 사용한다.
+#
+# 사용:
+#   cp .env.single.example .env
+#   docker compose -f docker-compose.single.yml --env-file .env up -d --build
+services:
+  mongodb:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mongo-alone:latest
+    container_name: example-mongodb
+    restart: always
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASS}
+      MONGO_NAME: ${MONGO_NAME}
+      MONGO_USER: ${MONGO_USER}
+      MONGO_PASS: ${MONGO_PASS}
+      MONGO_PRIMARY_HOST: ${MONGO_PRIMARY_HOST}
+      MONGO_NODE_NAME: ${MONGO_NODE_NAME:-mongodb}
+      MONGO_TLS_EXTRA_SAN: ${MONGO_TLS_EXTRA_SAN:-}
+      MONGO_TLS_REQUIRED: ${MONGO_TLS_REQUIRED:-true}
+    # entrypoint / command 는 Dockerfile 의 ENTRYPOINT/CMD 를 그대로 사용
+    volumes:
+      - mongodb_data:/data/db
+    healthcheck:
+      # 첫 기동 후 init-tls.sh 가 인증서를 만들고 mongod 가 TLS 옵션으로 재실행되면
+      # requireTLS 모드에서는 평문 ping 이 거부되므로 healthcheck 도 TLS 로 한다
+      # (인증서가 아직 없는 초기 구간은 start_period 가 흡수).
+      test: ["CMD", "mongosh", "--tls", "--tlsCAFile", "/data/db/certs/ca.pem", "--tlsAllowInvalidHostnames", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+    networks:
+      - mongo-net
+
+volumes:
+  mongodb_data:
+    driver: local
+
+networks:
+  mongo-net:
